@@ -15,6 +15,8 @@
 #   8084  payments-service        — token purchases via CCBill/Epoch/SegPay, webhook handling
 #   8085  tipping-service         — tip send/receive, tip-menu, goal tracking, Kafka fan-out
 #   8086  chat-service            — real-time WebSocket chat, Redis fan-out, ScyllaDB history
+#   8087  presence-service        — online/offline state, viewer counts, heartbeat TTL in Redis
+#   8088  streaming-orchestration — room lifecycle, IVS channel provision, WebRTC→LL-HLS promotion
 
 services:
 
@@ -165,6 +167,26 @@ services:
       - postgres-user-profile-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d user_profile_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-streaming:
+    image: postgres:16-alpine
+    container_name: platform-postgres-streaming
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: streaming_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5439:5432"
+    volumes:
+      - postgres-streaming-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d streaming_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -464,6 +486,78 @@ services:
     networks:
       - platform-net
 
+  presence-service:
+    build:
+      context: ./services/presence-service
+      dockerfile: Dockerfile
+    container_name: presence-service
+    restart: unless-stopped
+    ports:
+      - "8087:8087"
+    environment:
+      PORT: "8087"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_PRESENCE_TOPIC: "presence.events"
+      HEARTBEAT_TTL_SEC: ${HEARTBEAT_TTL_SEC:-30}
+      SWEEPER_INTERVAL_SEC: ${SWEEPER_INTERVAL_SEC:-30}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8087/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  streaming-orchestration-service:
+    build:
+      context: ./services/streaming-orchestration-service
+      dockerfile: Dockerfile
+    container_name: streaming-orchestration-service
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      PORT: "8088"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      DB_URL: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres-streaming:5432/streaming_db"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_STREAMING_TOPIC: "streaming.events"
+      KAFKA_PRESENCE_TOPIC: "presence.events"
+      KAFKA_GROUP_ID: "streaming-orchestration-service"
+      STREAMING_PROVIDER: "${STREAMING_PROVIDER:-MOCK}"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      PROMOTION_THRESHOLD: "${PROMOTION_THRESHOLD:-1000}"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres-streaming:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8088/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
 # ════════════════════════════════════════════════════════════════════════════
 # VOLUMES & NETWORKS
 # ════════════════════════════════════════════════════════════════════════════
@@ -473,6 +567,7 @@ volumes:
   redis-data:
   scylla-data:
   postgres-auth-data:
+  postgres-streaming-data:
   postgres-broadcaster-data:
   postgres-user-profile-data:
   postgres-tipping-data:
