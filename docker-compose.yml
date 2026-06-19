@@ -1,0 +1,239 @@
+# Root docker-compose — runs ALL services + shared infrastructure
+#
+# Usage:
+#   cp .env.example .env   # fill in JWT_SECRET (see below)
+#   docker compose up --build
+#
+# JWT_SECRET must be a base64-encoded 256-bit random key shared by all services.
+# Generate with:  openssl rand -base64 32
+#
+# Services running:
+#   8081  identity-auth-service   — registration, login, JWT issuance
+#   8082  user-profile-service    — viewer profiles, follows, blocklist
+#   8080  broadcaster-service     — broadcaster profiles, tip menus, stream config
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SHARED INFRASTRUCTURE
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # Single Kafka in KRaft mode (no Zookeeper required)
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: platform-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: platform-cluster-01
+    ports:
+      - "29092:29092"     # host access for local tools (Kafka UI, kafkacat)
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+    networks:
+      - platform-net
+
+  # Kafka UI (optional dev tool — http://localhost:8090)
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: platform-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: platform
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - platform-net
+    profiles: ["tools"]   # only started with: docker compose --profile tools up
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DATABASES (one per service — database-per-service pattern)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: platform-postgres-auth
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-auth-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-broadcaster:
+    image: postgres:16-alpine
+    container_name: platform-postgres-broadcaster
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: broadcaster_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-broadcaster-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d broadcaster_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-user-profile:
+    image: postgres:16-alpine
+    container_name: platform-postgres-user-profile
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: user_profile_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-user-profile-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d user_profile_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # MICROSERVICES
+  # ════════════════════════════════════════════════════════════════════════════
+
+  identity-auth-service:
+    build:
+      context: ./services/identity-auth-service
+      dockerfile: Dockerfile
+    container_name: identity-auth-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-auth:5432/auth_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env — run: openssl rand -base64 32}
+      JWT_ACCESS_TTL_MINUTES: ${JWT_ACCESS_TTL_MINUTES:-15}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-7}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  user-profile-service:
+    build:
+      context: ./services/user-profile-service
+      dockerfile: Dockerfile
+    container_name: user-profile-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-user-profile:5432/user_profile_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-user-profile:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  broadcaster-service:
+    build:
+      context: ./services/broadcaster-service
+      dockerfile: Dockerfile
+    container_name: broadcaster-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-broadcaster:5432/broadcaster_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Same HMAC secret used by identity-auth-service to sign tokens
+      JWT_PUBLIC_KEY: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-broadcaster:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+# ════════════════════════════════════════════════════════════════════════════
+# VOLUMES & NETWORKS
+# ════════════════════════════════════════════════════════════════════════════
+
+volumes:
+  kafka-data:
+  postgres-auth-data:
+  postgres-broadcaster-data:
+  postgres-user-profile-data:
+
+networks:
+  platform-net:
+    driver: bridge

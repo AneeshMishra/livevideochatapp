@@ -1,0 +1,73 @@
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres-broadcaster:
+    image: postgres:16-alpine
+    container_name: broadcaster-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: broadcaster_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5434:5432"
+    volumes:
+      - broadcaster-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d broadcaster_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka (KRaft mode — no Zookeeper needed in Kafka 3.x) ─────────────────
+  kafka-broadcaster:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: broadcaster-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broadcaster:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-broadcaster:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: broadcaster-cluster-01
+    ports:
+      - "9094:9092"
+    volumes:
+      - broadcaster-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Broadcaster Service ─────────────────────────────────────────────────────
+  broadcaster-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: broadcaster-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-broadcaster:5432/broadcaster_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka-broadcaster:9092
+      # Must match JWT_SECRET used by identity-auth-service
+      JWT_PUBLIC_KEY: ${JWT_SECRET:?JWT_SECRET must be set}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-broadcaster:
+        condition: service_healthy
+      kafka-broadcaster:
+        condition: service_healthy
+
+volumes:
+  broadcaster-postgres-data:
+  broadcaster-kafka-data:
