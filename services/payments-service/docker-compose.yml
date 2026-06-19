@@ -1,0 +1,83 @@
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres-payments:
+    image: postgres:16-alpine
+    container_name: payments-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5437:5432"
+    volumes:
+      - payments-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Kafka (KRaft mode) ─────────────────────────────────────────────────────
+  kafka-payments:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: payments-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-payments:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-payments:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: payments-cluster-01
+    ports:
+      - "9097:9092"
+    volumes:
+      - payments-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Payments Service ───────────────────────────────────────────────────────
+  payments-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payments-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-payments:5432/payment_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka-payments:9092
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set}"
+      # Payment provider credentials (leave blank for dev — webhook verification skipped)
+      CCBILL_ACCOUNT_NUMBER: ${CCBILL_ACCOUNT_NUMBER:-888888}
+      CCBILL_SUB_ACCOUNT: ${CCBILL_SUB_ACCOUNT:-0000}
+      CCBILL_FLEX_FORM_ID: ${CCBILL_FLEX_FORM_ID:-}
+      CCBILL_DIGEST_KEY: ${CCBILL_DIGEST_KEY:-}
+      EPOCH_MERCHANT_ID: ${EPOCH_MERCHANT_ID:-}
+      EPOCH_SECRET_KEY: ${EPOCH_SECRET_KEY:-}
+      SEGPAY_MERCHANT_ID: ${SEGPAY_MERCHANT_ID:-}
+      SEGPAY_SECRET_KEY: ${SEGPAY_SECRET_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+      kafka-payments:
+        condition: service_healthy
+
+volumes:
+  payments-postgres-data:
+  payments-kafka-data:

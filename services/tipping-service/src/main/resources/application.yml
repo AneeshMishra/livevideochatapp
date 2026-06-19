@@ -1,0 +1,86 @@
+spring:
+  application:
+    name: tipping-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/tipping_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        default_schema: public
+        connection.handling_mode: DELAYED_ACQUISITION_AND_HOLD
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+
+server:
+  port: ${SERVER_PORT:8085}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:}
+
+  kafka:
+    topics:
+      tipping-events: tipping.events
+
+  # Wallet service URL for service-to-service transfer calls
+  wallet:
+    service-url: ${WALLET_SERVICE_URL:http://wallet-service:8083}
+    # Timeout for wallet HTTP calls — tips must complete within this window
+    connect-timeout-ms: 3000
+    read-timeout-ms: 5000
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+  show-actuator: false
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    com.platform.tipping: ${LOG_LEVEL:INFO}
+    org.hibernate.SQL: WARN

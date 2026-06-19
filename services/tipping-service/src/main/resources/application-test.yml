@@ -1,0 +1,21 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///tipping_db
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: ${spring.embedded.kafka.brokers:localhost:9092}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+app:
+  jwt:
+    secret: dGVzdHNlY3JldGtleWZvcnVuaXR0ZXN0aW5nb25seW5vdHByb2Q=
+  wallet:
+    service-url: http://localhost:9999  # mocked in tests
+
+logging:
+  level:
+    com.platform.tipping: DEBUG

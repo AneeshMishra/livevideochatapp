@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: wallet-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/wallet_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      # Longer timeout — wallet ops hold locks briefly
+      idle-timeout: 600000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        default_schema: public
+        # Pessimistic locking requires explicit transaction control
+        connection.handling_mode: DELAYED_ACQUISITION_AND_HOLD
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+        # Transactional producer for outbox pattern
+        transactional.id: wallet-service-tx
+    consumer:
+      group-id: wallet-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+server:
+  port: ${SERVER_PORT:8083}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:}
+  kafka:
+    topics:
+      auth-events: auth.events
+      wallet-events: wallet.events
+  wallet:
+    # Platform fee as integer basis points (500 = 5.00%)
+    platform-fee-bps: ${PLATFORM_FEE_BPS:500}
+    # Well-known UUID for the platform's own revenue wallet
+    platform-wallet-id: ${PLATFORM_WALLET_ID:00000000-0000-0000-0000-000000000001}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+  show-actuator: false
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    com.platform.wallet: ${LOG_LEVEL:INFO}
+    org.hibernate.SQL: WARN

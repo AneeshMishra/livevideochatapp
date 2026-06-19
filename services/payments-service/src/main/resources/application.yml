@@ -1,0 +1,126 @@
+spring:
+  application:
+    name: payments-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/payment_db}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: 15
+      minimum-idle: 3
+      connection-timeout: 30000
+      idle-timeout: 600000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        default_schema: public
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 1
+
+server:
+  port: ${SERVER_PORT:8084}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:}
+
+  kafka:
+    topics:
+      payment-events: payment.events
+
+  # Token packages — what users can buy (price as string to avoid BigDecimal YAML rounding)
+  token-packages:
+    - id: 1
+      tokens: 100
+      price: "9.99"
+      currency: USD
+      label: "Starter"
+    - id: 2
+      tokens: 200
+      price: "17.99"
+      currency: USD
+      label: "Popular"
+    - id: 3
+      tokens: 500
+      price: "39.99"
+      currency: USD
+      label: "Value"
+    - id: 4
+      tokens: 1000
+      price: "74.99"
+      currency: USD
+      label: "Super"
+    - id: 5
+      tokens: 2000
+      price: "139.99"
+      currency: USD
+      label: "Ultra"
+
+  # Payment provider configuration
+  providers:
+    ccbill:
+      account-number: ${CCBILL_ACCOUNT_NUMBER:888888}
+      sub-account: ${CCBILL_SUB_ACCOUNT:0000}
+      flex-form-id: ${CCBILL_FLEX_FORM_ID:}
+      # digest-key (salt) used to verify webhook signatures — leave blank to skip in dev
+      digest-key: ${CCBILL_DIGEST_KEY:}
+      base-url: ${CCBILL_BASE_URL:https://billing.ccbill.com/jpost/billing.cgi}
+    epoch:
+      merchant-id: ${EPOCH_MERCHANT_ID:}
+      # secret-key used to verify epoch webhook hash — leave blank to skip in dev
+      secret-key: ${EPOCH_SECRET_KEY:}
+      base-url: ${EPOCH_BASE_URL:https://epoch.com/purchase}
+    segpay:
+      merchant-id: ${SEGPAY_MERCHANT_ID:}
+      # secret-key used for HMAC-SHA256 webhook verification — leave blank to skip in dev
+      secret-key: ${SEGPAY_SECRET_KEY:}
+      base-url: ${SEGPAY_BASE_URL:https://cgp.segpay.com/cgi/billing.cgi}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+  show-actuator: false
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    com.platform.payments: ${LOG_LEVEL:INFO}
+    org.hibernate.SQL: WARN

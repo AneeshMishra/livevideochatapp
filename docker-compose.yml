@@ -8,15 +8,57 @@
 # Generate with:  openssl rand -base64 32
 #
 # Services running:
+#   8080  broadcaster-service     — broadcaster profiles, tip menus, stream config
 #   8081  identity-auth-service   — registration, login, JWT issuance
 #   8082  user-profile-service    — viewer profiles, follows, blocklist
-#   8080  broadcaster-service     — broadcaster profiles, tip menus, stream config
+#   8083  wallet-service          — token balances, double-entry ledger, transfers
+#   8084  payments-service        — token purchases via CCBill/Epoch/SegPay, webhook handling
+#   8085  tipping-service         — tip send/receive, tip-menu, goal tracking, Kafka fan-out
+#   8086  chat-service            — real-time WebSocket chat, Redis fan-out, ScyllaDB history
 
 services:
 
   # ════════════════════════════════════════════════════════════════════════════
   # SHARED INFRASTRUCTURE
   # ════════════════════════════════════════════════════════════════════════════
+
+  # ── Redis (shared: chat pub/sub fan-out, presence, rate-limiting, leaderboards)
+  redis:
+    image: redis:7-alpine
+    container_name: platform-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly no
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  # ── ScyllaDB (chat history — high write throughput, time-series, 7-day TTL)
+  scylla:
+    image: scylladb/scylla:6.0
+    container_name: platform-scylla
+    restart: unless-stopped
+    # Developer mode: disable CPU pinning; tune for a single shared host
+    command: --smp 1 --memory 1G --overprovisioned 1 --developer-mode 1
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status | grep -E '^UN'"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 90s
+    networks:
+      - platform-net
 
   # Single Kafka in KRaft mode (no Zookeeper required)
   kafka:
@@ -129,6 +171,66 @@ services:
     networks:
       - platform-net
 
+  postgres-tipping:
+    image: postgres:16-alpine
+    container_name: platform-postgres-tipping
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tipping_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5438:5432"
+    volumes:
+      - postgres-tipping-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tipping_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-payments:
+    image: postgres:16-alpine
+    container_name: platform-postgres-payments
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: payment_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5437:5432"
+    volumes:
+      - postgres-payments-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-wallet:
+    image: postgres:16-alpine
+    container_name: platform-postgres-wallet
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wallet_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres-wallet-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wallet_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
   # ════════════════════════════════════════════════════════════════════════════
   # MICROSERVICES
   # ════════════════════════════════════════════════════════════════════════════
@@ -146,7 +248,7 @@ services:
       DB_USER: postgres
       DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env — run: openssl rand -base64 32}
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
       JWT_ACCESS_TTL_MINUTES: ${JWT_ACCESS_TTL_MINUTES:-15}
       JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-7}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -224,15 +326,158 @@ services:
     networks:
       - platform-net
 
+  tipping-service:
+    build:
+      context: ./services/tipping-service
+      dockerfile: Dockerfile
+    container_name: tipping-service
+    restart: unless-stopped
+    ports:
+      - "8085:8085"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-tipping:5432/tipping_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      # wallet-service is on the same platform-net bridge
+      WALLET_SERVICE_URL: http://wallet-service:8083
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-tipping:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      wallet-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  payments-service:
+    build:
+      context: ./services/payments-service
+      dockerfile: Dockerfile
+    container_name: payments-service
+    restart: unless-stopped
+    ports:
+      - "8084:8084"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-payments:5432/payment_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      CCBILL_ACCOUNT_NUMBER: ${CCBILL_ACCOUNT_NUMBER:-888888}
+      CCBILL_SUB_ACCOUNT: ${CCBILL_SUB_ACCOUNT:-0000}
+      CCBILL_FLEX_FORM_ID: ${CCBILL_FLEX_FORM_ID:-}
+      CCBILL_DIGEST_KEY: ${CCBILL_DIGEST_KEY:-}
+      EPOCH_MERCHANT_ID: ${EPOCH_MERCHANT_ID:-}
+      EPOCH_SECRET_KEY: ${EPOCH_SECRET_KEY:-}
+      SEGPAY_MERCHANT_ID: ${SEGPAY_MERCHANT_ID:-}
+      SEGPAY_SECRET_KEY: ${SEGPAY_SECRET_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  wallet-service:
+    build:
+      context: ./services/wallet-service
+      dockerfile: Dockerfile
+    container_name: wallet-service
+    restart: unless-stopped
+    ports:
+      - "8083:8083"
+    environment:
+      DB_URL: jdbc:postgresql://postgres-wallet:5432/wallet_db
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-500}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-wallet:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  chat-service:
+    build:
+      context: ./services/chat-service
+      dockerfile: Dockerfile
+    container_name: chat-service
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      PORT: "8086"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      REDIS_URL: "redis://redis:6379"
+      SCYLLA_HOSTS: "scylla:9042"
+      SCYLLA_KEYSPACE: "chat"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TIPPING_TOPIC: "tipping.events"
+      KAFKA_GROUP_ID: "chat-service"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      RATE_LIMIT_MESSAGES: ${RATE_LIMIT_MESSAGES:-5}
+      RATE_LIMIT_WINDOW_SEC: ${RATE_LIMIT_WINDOW_SEC:-5}
+    depends_on:
+      redis:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
 # ════════════════════════════════════════════════════════════════════════════
 # VOLUMES & NETWORKS
 # ════════════════════════════════════════════════════════════════════════════
 
 volumes:
   kafka-data:
+  redis-data:
+  scylla-data:
   postgres-auth-data:
   postgres-broadcaster-data:
   postgres-user-profile-data:
+  postgres-tipping-data:
+  postgres-payments-data:
+  postgres-wallet-data:
 
 networks:
   platform-net:
