@@ -1,0 +1,59 @@
+All 30 Backend Services
+✅ 14 Implemented
+#	Service	Port	Stack	Phase
+1	API Gateway / BFF	8000	Go	1
+2	Identity & Auth	8081	Spring Boot	1
+3	User Profile	8082	Spring Boot	1
+4	Broadcaster Service	8080	Spring Boot	1
+6	Catalog / Discovery	8089	Spring Boot	1
+7	Streaming Orchestration	8088	Go	1
+13	Chat	8086	Go	1
+14	Presence	8087	Go	1
+15	Wallet / Token Ledger	8083	Spring Boot	1
+16	Payments (top-up)	8084	Spring Boot	1
+18	Tipping / Gifts	8085	Spring Boot	1
+19	Private Show Billing	8091	Go	2
+20	Moderation	8090	Python FastAPI	1
+21	Notification	8092	Go	1
+❌ 16 Remaining
+#	Service	Stack	Phase	Notes
+5	Age Verification & KYC	Go / Spring Boot + vendor	1	Integrates Veriff/Yoti/Persona; 2257 record store
+8	Media Ingest	Go + nginx-rtmp	1	RTMP/SRT/WebRTC publish endpoints; stream key validation
+9	SFU / Media Server	LiveKit Cloud (Phase 1), self-hosted K8s (Phase 3)	1	WebRTC forwarding, simulcast; buy not build
+10	Transcoder	Go + FFmpeg workers	2	ABR renditions (240p–1080p); GPU NVENC
+11	Recorder / VOD	Go + FFmpeg	2	Capture streams, package to HLS, store to S3
+12	Thumbnailer	Go + FFmpeg	1	Periodic frame grabs for discovery grid + moderation feed
+17	Payouts	Spring Boot	2	Broadcaster earnings, Paxum/bank/crypto, tax docs
+22	Gamification	Go	2	Leaderboards (Redis sorted sets), badges, levels, contests
+23	Affiliate / Referral	Spring Boot	2	Tracking links, attribution, rev-share, postbacks
+24	Content Store	Spring Boot	2	Paid clips, photo sets, fan-club subscriptions
+25	Search Indexer	Go	2	Consumes Kafka events, keeps OpenSearch index fresh
+26	Analytics / Events	Go → Kafka → ClickHouse	3	Clickstream, BI, real-time metrics
+27	Admin / Back-office	Spring Boot + React admin	1	Ops console, finance, moderation, support
+28	Geo / Compliance	Go / Spring Boot	2	Geo-blocking, jurisdiction rules, DMCA/CSAM workflow
+29	Media Asset / DRM	Go	2	Signed expiring URLs, per-segment HLS auth, forensic watermarking
+30	Feature Flags / Config	Unleash (buy not build)	1	Runtime config; deploy Unleash OSS container
+UI Applications Required
+Website — React + TypeScript + Next.js + Tailwind CSS
+App	Route	Key Screens
+Viewer Web App	livecam.com/	Discovery grid, live room player (HLS.js + WebRTC), public chat, tipping panel, gift animations, goal bars, tip menu, broadcaster profile, follow/unfollow, token wallet, token purchase flow, notification inbox, settings
+Broadcaster Dashboard	livecam.com/studio	Go-live button (WebRTC publish), RTMP/SRT stream key page, real-time viewer count, earnings ticker, tipper leaderboard, tip menu editor, goal bar editor, stream title/tags/category, room mode switcher (public → private), geo-block settings, KYC document upload, payout request
+Admin Console	livecam.com/admin	User & broadcaster management, moderation review queue, DMCA takedown workflow, finance reconciliation, chargeback management, affiliate tracking, feature flag toggles, analytics dashboards
+Android — React Native (or native Kotlin for camera quality)
+App	Key Screens
+Viewer Android App	Discovery grid with lazy thumbnails, live room with HLS player + low-latency WebRTC fallback, chat (WebSocket), token purchase (in-app billing bridge to CCBill), tip/gift UI with haptic animations, push notification integration (FCM), follow feed, profile & settings
+Broadcaster Android App	Camera preview + go-live (WebRTC publish via LiveKit SDK), real-time dashboard overlay (viewer count, tip ticker), tip goal bar, mode switcher, earnings summary, stream end/pause controls
+iOS — React Native (or native Swift for camera quality)
+Same two apps as Android, substituting APNs for FCM push notifications and Apple In-App Purchase bridging for payment flows.
+
+Priority Build Order (what to implement next)
+Immediate Phase 1 gaps (needed to ship MVP):
+
+1 KYC / Age Verification (5) — legal blocker; no broadcasting without it
+2 Thumbnailer (12) — catalog grid is broken without room thumbnails
+3 Media Ingest (8) — RTMP ingest + stream key; can mock with LiveKit Cloud
+4 Admin Console backend (27) — needed to manage users, handle moderation escalations
+5 Feature Flags (30) — deploy Unleash OSS container, one docker-compose entry
+Phase 2 next up:
+6. Payouts (17), Content Store (24), Gamification (22), Recorder/VOD (11), Search Indexer (25), Geo/Compliance (28), Media Asset/DRM (29), Affiliate (23)
+
