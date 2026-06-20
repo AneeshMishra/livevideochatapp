@@ -1,0 +1,2 @@
+ALTER TABLE gifts_sent
+    ADD COLUMN IF NOT EXISTS sender_display_name VARCHAR(150) NOT NULL DEFAULT '';

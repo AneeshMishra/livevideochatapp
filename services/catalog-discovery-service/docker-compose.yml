@@ -1,0 +1,117 @@
+# Standalone compose — runs catalog-discovery-service in isolation.
+# Usage: docker compose up --build
+# JWT_SECRET must match across services: openssl rand -base64 32
+
+services:
+
+  postgres-catalog:
+    image: postgres:16-alpine
+    container_name: catalog-postgres
+    environment:
+      POSTGRES_DB: catalog_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5440:5432"
+    volumes:
+      - catalog-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    container_name: catalog-opensearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin@1234!
+      - plugins.security.disabled=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - catalog-opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  redis-catalog:
+    image: redis:7-alpine
+    container_name: catalog-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-catalog:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: catalog-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-catalog:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-catalog:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: catalog-cluster-01
+    ports:
+      - "29092:29092"
+    volumes:
+      - catalog-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+  catalog-discovery-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: catalog-discovery-service
+    ports:
+      - "8089:8089"
+    environment:
+      PORT: "8089"
+      DB_URL: "jdbc:postgresql://postgres-catalog:5432/catalog_db"
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_URL: "redis://redis-catalog:6379"
+      OPENSEARCH_URL: "http://opensearch:9200"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-catalog:9092"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET -- run: openssl rand -base64 32}"
+      BROADCASTER_SERVICE_URL: "http://host.docker.internal:8080"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis-catalog:
+        condition: service_healthy
+      kafka-catalog:
+        condition: service_healthy
+
+volumes:
+  catalog-postgres-data:
+  catalog-opensearch-data:
+  catalog-kafka-data:

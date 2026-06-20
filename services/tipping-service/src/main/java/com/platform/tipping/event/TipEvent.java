@@ -13,7 +13,8 @@ import java.util.UUID;
 public sealed interface TipEvent permits
         TipEvent.TipReceived,
         TipEvent.TipGoalUpdated,
-        TipEvent.TipGoalCompleted {
+        TipEvent.TipGoalCompleted,
+        TipEvent.GiftSent {
 
     String eventType();
     UUID roomId();
@@ -66,5 +67,25 @@ public sealed interface TipEvent permits
             Instant occurredAt
     ) implements TipEvent {
         public String eventType() { return "TIP_GOAL_COMPLETED"; }
+    }
+
+    /**
+     * Fired when a viewer sends a virtual animated gift.
+     * animationType drives which on-screen animation the client renders.
+     */
+    record GiftSent(
+            UUID giftSentId,
+            UUID roomId,
+            UUID senderId,
+            String senderDisplayName,
+            UUID recipientId,
+            UUID giftTypeId,
+            String giftTypeName,
+            String animationType,
+            long tokenAmount,
+            String message,
+            Instant occurredAt
+    ) implements TipEvent {
+        public String eventType() { return "GIFT_SENT"; }
     }
 }

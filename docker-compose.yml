@@ -8,15 +8,20 @@
 # Generate with:  openssl rand -base64 32
 #
 # Services running:
-#   8080  broadcaster-service     — broadcaster profiles, tip menus, stream config
-#   8081  identity-auth-service   — registration, login, JWT issuance
-#   8082  user-profile-service    — viewer profiles, follows, blocklist
-#   8083  wallet-service          — token balances, double-entry ledger, transfers
-#   8084  payments-service        — token purchases via CCBill/Epoch/SegPay, webhook handling
-#   8085  tipping-service         — tip send/receive, tip-menu, goal tracking, Kafka fan-out
-#   8086  chat-service            — real-time WebSocket chat, Redis fan-out, ScyllaDB history
-#   8087  presence-service        — online/offline state, viewer counts, heartbeat TTL in Redis
-#   8088  streaming-orchestration — room lifecycle, IVS channel provision, WebRTC→LL-HLS promotion
+#   8080  broadcaster-service           — broadcaster profiles, tip menus, stream config
+#   8081  identity-auth-service         — registration, login, JWT issuance
+#   8082  user-profile-service          — viewer profiles, follows, blocklist
+#   8083  wallet-service                — token balances, double-entry ledger, transfers
+#   8084  payments-service              — token purchases via CCBill/Epoch/SegPay, webhook handling
+#   8085  tipping-service               — tip send/receive, tip-menu, goal tracking, Kafka fan-out
+#   8086  chat-service                  — real-time WebSocket chat, Redis fan-out, ScyllaDB history
+#   8087  presence-service              — online/offline state, viewer counts, heartbeat TTL in Redis
+#   8088  streaming-orchestration       — room lifecycle, IVS channel provision, WebRTC→LL-HLS promotion
+#   8089  catalog-discovery-service     — live grid, search, categories, trending; OpenSearch + Redis
+#   8090  moderation-service            — AI frame scanning, CSAM detection, human review queue, DMCA
+#   8091  private-show-billing-service  — per-minute billing meter, session reconciliation; Redis + Postgres
+#   8000  api-gateway-service           — edge routing, JWT validation, rate-limiting, CORS, BFF aggregation
+#   8092  notification-service          — multi-channel notifications (push/email/in-app), follower fan-out, opt-out prefs
 
 services:
 
@@ -39,6 +44,56 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - platform-net
+
+  # ── MinIO (S3-compatible object storage for moderation frame captures, VOD, media)
+  minio:
+    image: minio/minio:latest
+    container_name: platform-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    ports:
+      - "9000:9000"    # S3 API endpoint
+      - "9001:9001"    # MinIO web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  # ── OpenSearch (catalog discovery, full-text search)
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    container_name: platform-opensearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Admin@1234!
+      - plugins.security.disabled=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     networks:
       - platform-net
 
@@ -193,6 +248,86 @@ services:
     networks:
       - platform-net
 
+  postgres-moderation:
+    image: postgres:16-alpine
+    container_name: platform-postgres-moderation
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: moderation_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5441:5432"
+    volumes:
+      - postgres-moderation-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d moderation_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-catalog:
+    image: postgres:16-alpine
+    container_name: platform-postgres-catalog
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: catalog_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5440:5432"
+    volumes:
+      - postgres-catalog-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-private-show:
+    image: postgres:16-alpine
+    container_name: platform-postgres-private-show
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: private_show_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5442:5432"
+    volumes:
+      - postgres-private-show-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d private_show_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  postgres-notification:
+    image: postgres:16-alpine
+    container_name: platform-postgres-notification
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5443:5432"
+    volumes:
+      - postgres-notification-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notification_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
   postgres-tipping:
     image: postgres:16-alpine
     container_name: platform-postgres-tipping
@@ -256,6 +391,49 @@ services:
   # ════════════════════════════════════════════════════════════════════════════
   # MICROSERVICES
   # ════════════════════════════════════════════════════════════════════════════
+
+  api-gateway-service:
+    build:
+      context: ./services/api-gateway-service
+      dockerfile: Dockerfile
+    container_name: api-gateway-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      PORT: "8000"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      REDIS_URL: "redis://redis:6379"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+      RATE_LIMIT_ANONYMOUS_PER_MIN: "${RATE_LIMIT_ANONYMOUS_PER_MIN:-30}"
+      RATE_LIMIT_AUTH_PER_MIN: "${RATE_LIMIT_AUTH_PER_MIN:-120}"
+      # Downstream service URLs (internal Docker network)
+      IDENTITY_AUTH_URL: "http://identity-auth-service:8081"
+      USER_PROFILE_URL: "http://user-profile-service:8082"
+      BROADCASTER_URL: "http://broadcaster-service:8080"
+      WALLET_URL: "http://wallet-service:8083"
+      PAYMENTS_URL: "http://payments-service:8084"
+      TIPPING_URL: "http://tipping-service:8085"
+      CHAT_URL: "http://chat-service:8086"
+      PRESENCE_URL: "http://presence-service:8087"
+      STREAMING_URL: "http://streaming-orchestration-service:8088"
+      CATALOG_URL: "http://catalog-discovery-service:8089"
+      MODERATION_URL: "http://moderation-service:8090"
+      PRIVATE_SHOW_URL: "http://private-show-billing-service:8091"
+      NOTIFICATION_URL: "http://notification-service:8092"
+    depends_on:
+      redis:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
 
   identity-auth-service:
     build:
@@ -558,6 +736,178 @@ services:
     networks:
       - platform-net
 
+  moderation-service:
+    build:
+      context: ./services/moderation-service
+      dockerfile: Dockerfile
+    container_name: moderation-service
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      DB_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres-moderation:5432/moderation_db"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_STREAMING_TOPIC: "streaming.events"
+      KAFKA_MODERATION_TOPIC: "moderation.events"
+      KAFKA_GROUP_ID: "moderation-service"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      MODERATION_PROVIDER: "${MODERATION_PROVIDER:-MOCK}"
+      AWS_REGION: "${AWS_REGION:-us-east-1}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      S3_ENDPOINT_URL: "http://minio:9000"
+      S3_BUCKET: "platform-moderation"
+      S3_ACCESS_KEY: "${MINIO_ROOT_USER:-minioadmin}"
+      S3_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin123}"
+      AI_UNSAFE_THRESHOLD: "${AI_UNSAFE_THRESHOLD:-0.70}"
+      AI_CSAM_THRESHOLD: "${AI_CSAM_THRESHOLD:-0.50}"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-moderation:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  private-show-billing-service:
+    build:
+      context: ./services/private-show-billing-service
+      dockerfile: Dockerfile
+    container_name: private-show-billing-service
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    environment:
+      PORT: "8091"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      DB_URL: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres-private-show:5432/private_show_db"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_PRIVATE_SHOW_TOPIC: "private-show.events"
+      KAFKA_STREAMING_TOPIC: "streaming.events"
+      KAFKA_GROUP_ID: "private-show-billing-service"
+      WALLET_SERVICE_URL: "http://wallet-service:8083"
+      BILLING_INTERVAL_SEC: "${BILLING_INTERVAL_SEC:-10}"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres-private-show:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      wallet-service:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8091/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    ports:
+      - "8092:8092"
+    environment:
+      PORT: "8092"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      DATABASE_URL: "postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres-notification:5432/notification_db"
+      REDIS_URL: "redis://redis:6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: "notification-service"
+      KAFKA_TIPPING_TOPIC: "tipping.events"
+      KAFKA_STREAMING_TOPIC: "streaming.events"
+      KAFKA_MODERATION_TOPIC: "moderation.events"
+      KAFKA_PRIVATE_SHOW_TOPIC: "private-show.events"
+      KAFKA_USER_PROFILE_TOPIC: "user-profile.events"
+      BROADCASTER_SERVICE_URL: "http://broadcaster-service:8080"
+      EMAIL_PROVIDER: "${EMAIL_PROVIDER:-MOCK}"
+      SENDGRID_API_KEY: "${SENDGRID_API_KEY:-}"
+      PUSH_PROVIDER: "${PUSH_PROVIDER:-MOCK}"
+      FCM_SERVER_KEY: "${FCM_SERVER_KEY:-}"
+      PUSH_RATE_LIMIT_PER_HOUR: "${PUSH_RATE_LIMIT_PER_HOUR:-20}"
+      EMAIL_RATE_LIMIT_PER_DAY: "${EMAIL_RATE_LIMIT_PER_DAY:-10}"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres-notification:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8092/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
+  catalog-discovery-service:
+    build:
+      context: ./services/catalog-discovery-service
+      dockerfile: Dockerfile
+    container_name: catalog-discovery-service
+    restart: unless-stopped
+    ports:
+      - "8089:8089"
+    environment:
+      PORT: "8089"
+      DB_URL: "jdbc:postgresql://postgres-catalog:5432/catalog_db"
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_URL: "redis://redis:6379"
+      OPENSEARCH_URL: "http://opensearch:9200"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_STREAMING_TOPIC: "streaming.events"
+      KAFKA_PRESENCE_TOPIC: "presence.events"
+      KAFKA_GROUP_ID: "catalog-discovery-service"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env -- run: openssl rand -base64 32}"
+      BROADCASTER_SERVICE_URL: "http://broadcaster-service:8080"
+      GRID_CACHE_TTL_SEC: ${GRID_CACHE_TTL_SEC:-10}
+      ROOM_CACHE_TTL_SEC: ${ROOM_CACHE_TTL_SEC:-30}
+      TRENDING_MAX_ROOMS: ${TRENDING_MAX_ROOMS:-50}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8089/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-net
+
 # ════════════════════════════════════════════════════════════════════════════
 # VOLUMES & NETWORKS
 # ════════════════════════════════════════════════════════════════════════════
@@ -566,13 +916,19 @@ volumes:
   kafka-data:
   redis-data:
   scylla-data:
+  opensearch-data:
+  minio-data:
   postgres-auth-data:
+  postgres-moderation-data:
   postgres-streaming-data:
+  postgres-catalog-data:
   postgres-broadcaster-data:
   postgres-user-profile-data:
   postgres-tipping-data:
   postgres-payments-data:
   postgres-wallet-data:
+  postgres-private-show-data:
+  postgres-notification-data:
 
 networks:
   platform-net:

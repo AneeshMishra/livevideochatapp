@@ -69,6 +69,11 @@ public class FollowService {
     }
 
     @Transactional(readOnly = true)
+    public Page<Follow> listFollowers(UUID followeeId, Pageable pageable) {
+        return followRepository.findByFolloweeIdOrderByCreatedAtDesc(followeeId, pageable);
+    }
+
+    @Transactional(readOnly = true)
     public long countFollowers(UUID followeeId) {
         return followRepository.countByFolloweeId(followeeId);
     }

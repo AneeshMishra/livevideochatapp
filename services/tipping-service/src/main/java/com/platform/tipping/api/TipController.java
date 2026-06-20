@@ -1,5 +1,6 @@
 package com.platform.tipping.api;
 
+import com.platform.tipping.api.dto.LeaderboardEntry;
 import com.platform.tipping.api.dto.SendTipRequest;
 import com.platform.tipping.api.dto.TipResponse;
 import com.platform.tipping.domain.Tip;
@@ -13,6 +14,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -73,7 +75,7 @@ public class TipController {
         return ResponseEntity.ok(result);
     }
 
-    // All tips in a room (for the live tip feed / leaderboard)
+    // All tips in a room (for the live tip feed)
     @GetMapping("/room/{roomId}")
     public ResponseEntity<Page<TipResponse>> roomTips(
             @PathVariable UUID roomId,
@@ -83,5 +85,23 @@ public class TipController {
         Page<TipResponse> result = tipService.getRoomTips(roomId, PageRequest.of(page, Math.min(size, 100)))
                 .map(TipResponse::from);
         return ResponseEntity.ok(result);
+    }
+
+    // Top tippers in a specific room session
+    @GetMapping("/room/{roomId}/leaderboard")
+    public ResponseEntity<List<LeaderboardEntry>> roomLeaderboard(
+            @PathVariable UUID roomId,
+            @RequestParam(defaultValue = "10") int limit) {
+
+        return ResponseEntity.ok(tipService.getRoomLeaderboard(roomId, Math.min(limit, 100)));
+    }
+
+    // Top tippers for a broadcaster across all rooms, all-time
+    @GetMapping("/broadcasters/{broadcasterId}/leaderboard")
+    public ResponseEntity<List<LeaderboardEntry>> broadcasterLeaderboard(
+            @PathVariable UUID broadcasterId,
+            @RequestParam(defaultValue = "10") int limit) {
+
+        return ResponseEntity.ok(tipService.getBroadcasterLeaderboard(broadcasterId, Math.min(limit, 100)));
     }
 }

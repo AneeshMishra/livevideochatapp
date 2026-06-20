@@ -71,6 +71,19 @@ public class FollowController {
         return new FollowerCountResponse(followService.countFollowers(broadcasterId));
     }
 
+    @Operation(summary = "List followers of a broadcaster (internal/admin)")
+    @GetMapping("/followers/{broadcasterId}")
+    public PageResponse<FollowResponse> listFollowers(
+            @PathVariable UUID broadcasterId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "100") int size
+    ) {
+        return PageResponse.from(
+                followService.listFollowers(broadcasterId, PageRequest.of(page, Math.min(size, 500))),
+                FollowResponse::from
+        );
+    }
+
     record FollowStatusResponse(boolean following) {}
     record FollowerCountResponse(long count) {}
 }

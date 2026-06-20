@@ -1,0 +1,40 @@
+Now I have all the context. Let me build a comprehensive notification service design — architecture diagram + interactive UI mockup.Here's the full architecture. Each box is clickable to explore further. Now let's see the user-facing notification preferences UI and example notification designs:Here's the full design and solution for your notification service. Let me walk through each layer:
+
+---
+
+## Architecture summary
+
+**Event flow:** Every domain action (tip, go-live, KYC change, payout, private show request) publishes to a `notification.events` Kafka topic. The notification service consumes from this topic — giving you durability, replay, and zero coupling to the originating service.
+
+**Notification Service core responsibilities:**
+- **Consumer** — reads Kafka events, maps them to notification types
+- **User preference lookup** — checks PostgreSQL for which channels the user has enabled per event type
+- **Deduplication** — Redis key per `(userId, eventId)` with a short TTL prevents duplicate sends if Kafka re-delivers
+- **Rate limiter** — Redis token bucket per user per channel (e.g. max 5 push/hour) prevents spam
+- **Template engine** — renders HTML emails, WhatsApp approved templates, and push payloads from S3-stored templates
+- **Dead letter queue (DLQ)** — failed deliveries retry with exponential backoff; after N retries, drop to DLQ for manual inspection
+- **Delivery log** — PostgreSQL write of every sent/failed notification for audit and support
+
+---
+
+## Three channel adapters
+
+**Email (SendGrid / AWS SES):** Best for rich content — weekly earnings digests, KYC approval letters, payout receipts. Use HTML templates with your design system colors. Respect CAN-SPAM: include unsubscribe footer on all marketing-class emails.
+
+**WhatsApp (Twilio or Meta Cloud API):** Must use pre-approved message templates for outbound initiated messages (Meta's requirement). Best for time-sensitive, action-required events: private show requests, urgent KYC decisions. Require users to opt-in with their WhatsApp number in profile settings.
+
+**Push / In-app (FCM + APNs):** Best for real-time, glanceable alerts — go-live events, tip received, room announcements. Store FCM/APNs device tokens per user in PostgreSQL. Also power the in-app bell icon (WebSocket fan-out to the live room).
+
+---
+
+## Key design decisions
+
+**Quiet hours** — store a `quiet_from` / `quiet_to` per user in UTC. Buffer non-urgent notifications (weekly digest, follow-up emails) and release them after the quiet window ends. Never suppress critical alerts (KYC, fraud).
+
+**Priority tiers** — three tiers: `CRITICAL` (always sends, all channels), `REALTIME` (respects quiet hours, sends push + WA), `DIGEST` (batched, email only). Assign per event type.
+
+**Template versioning** — store templates in S3 with a version key. The service resolves the current version at render time, so you can A/B test or roll back without a deployment.
+
+**Broadcaster vs viewer routing** — the same Kafka event may need to notify both the broadcaster (tip received) and a viewer (favourite is live). The notification service holds this fan-out logic, not the originating service.
+
+Want me to generate the Spring Boot / Go service skeleton, the Kafka consumer code, or the Figma screen for the notification preferences settings page?

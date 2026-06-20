@@ -48,8 +48,13 @@ public class SecurityConfig {
                     "/actuator/prometheus",
                     "/api-docs/**",
                     "/swagger-ui/**",
-                    // Tip menu is public (viewers see it before sending a tip)
-                    "/api/v1/tip-menu/**"
+                    // Tip menu and gift catalog are public (viewers see them before sending)
+                    "/api/v1/tip-menu/**",
+                    "/api/v1/gifts/catalog",
+                    // Room leaderboards are public (visible to all viewers)
+                    "/api/v1/tips/room/*/leaderboard",
+                    "/api/v1/gifts/room/*/leaderboard",
+                    "/api/v1/tips/broadcasters/*/leaderboard"
                 ).permitAll()
                 .anyRequest().authenticated()
             )

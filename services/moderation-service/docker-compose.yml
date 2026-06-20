@@ -1,0 +1,95 @@
+# Standalone compose — runs moderation-service in isolation.
+# Usage: docker compose up --build
+# JWT_SECRET must match across services: openssl rand -base64 32
+
+services:
+
+  postgres-moderation:
+    image: postgres:16-alpine
+    container_name: moderation-postgres
+    environment:
+      POSTGRES_DB: moderation_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5441:5432"
+    volumes:
+      - moderation-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d moderation_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: moderation-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - moderation-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-moderation:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: moderation-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-moderation:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-moderation:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: moderation-cluster-01
+    ports:
+      - "29092:29092"
+    volumes:
+      - moderation-kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+
+  moderation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moderation-service
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      DB_URL: "postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres-moderation:5432/moderation_db"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka-moderation:9092"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET -- run: openssl rand -base64 32}"
+      MODERATION_PROVIDER: "${MODERATION_PROVIDER:-MOCK}"
+      S3_ENDPOINT_URL: "http://minio:9000"
+      S3_BUCKET: "platform-moderation"
+      S3_ACCESS_KEY: "minioadmin"
+      S3_SECRET_KEY: "minioadmin123"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres-moderation:
+        condition: service_healthy
+      kafka-moderation:
+        condition: service_healthy
+
+volumes:
+  moderation-postgres-data:
+  moderation-minio-data:
+  moderation-kafka-data:

@@ -1,5 +1,6 @@
 package com.platform.tipping.service;
 
+import com.platform.tipping.api.dto.LeaderboardEntry;
 import com.platform.tipping.client.WalletClient;
 import com.platform.tipping.domain.GoalStatus;
 import com.platform.tipping.domain.Tip;
@@ -17,11 +18,14 @@ import com.platform.tipping.repository.TipRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -158,6 +162,28 @@ public class TipService {
     @Transactional(readOnly = true)
     public Page<Tip> getRoomTips(UUID roomId, Pageable pageable) {
         return tipRepo.findByRoomIdAndStatusOrderByCreatedAtDesc(roomId, TipStatus.COMPLETED, pageable);
+    }
+
+    // ── Leaderboards ──────────────────────────────────────────────────────────
+
+    @Transactional(readOnly = true)
+    public List<LeaderboardEntry> getRoomLeaderboard(UUID roomId, int limit) {
+        var rows = tipRepo.findTopTippersByRoom(roomId, PageRequest.of(0, limit));
+        List<LeaderboardEntry> result = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            result.add(LeaderboardEntry.fromRow(rows.get(i), i + 1));
+        }
+        return result;
+    }
+
+    @Transactional(readOnly = true)
+    public List<LeaderboardEntry> getBroadcasterLeaderboard(UUID broadcasterId, int limit) {
+        var rows = tipRepo.findTopTippersForBroadcaster(broadcasterId, PageRequest.of(0, limit));
+        List<LeaderboardEntry> result = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            result.add(LeaderboardEntry.fromRow(rows.get(i), i + 1));
+        }
+        return result;
     }
 
     // ── private event helpers ──────────────────────────────────────────────────
